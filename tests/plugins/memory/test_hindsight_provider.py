@@ -1166,6 +1166,20 @@ class TestConfigSchema:
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
 
+    def test_recall_tags_match_supports_exact(self, provider):
+        schema = provider.get_config_schema()
+        field = next(item for item in schema if item["key"] == "recall_tags_match")
+
+        assert "exact" in field["choices"]
+
+    def test_pinned_client_accepts_exact_tag_matching(self):
+        from importlib.metadata import version
+
+        from hindsight_client_api.models.recall_request import RecallRequest
+
+        assert version("hindsight-client") == "0.8.6"
+        assert RecallRequest(query="test", tags_match="exact").tags_match == "exact"
+
 
 # ---------------------------------------------------------------------------
 # bank_id_template tests
