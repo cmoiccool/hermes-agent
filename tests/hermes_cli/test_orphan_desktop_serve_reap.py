@@ -9,11 +9,13 @@ boot must clear those corpses without touching intentional fixed-port serves
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.dashboard_procs import (
     _is_desktop_local_serve_cmdline,
     _reap_orphaned_desktop_local_serves,
+    _scan_dashboard_processes,
 )
 
 
@@ -40,6 +42,26 @@ def test_desktop_local_serve_shape_spares_fixed_port_and_non_serve():
     assert not _is_desktop_local_serve_cmdline(
         "vim notes about hermes serve --port 0"
     )
+
+
+def test_process_scan_matches_profile_option_before_serve():
+    process_table = "\n".join(
+        [
+            "111 /venv/bin/python3 /venv/bin/hermes --profile support serve --isolated --host 127.0.0.1 --port 0",
+            "222 /venv/bin/hermes --profile support dashboard --host 127.0.0.1 --port 0",
+            "333 /venv/bin/hermes --profile support gateway run",
+        ]
+    )
+    with (
+        patch("hermes_cli.dashboard_procs.sys.platform", "linux"),
+        patch(
+            "hermes_cli.dashboard_procs.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=process_table),
+        ),
+    ):
+        found = _scan_dashboard_processes()
+
+    assert {pid for pid, _command in found} == {111, 222}
 
 
 def test_reap_only_kills_ppid1_local_serves():

@@ -13,6 +13,7 @@ patches on ``hermes_cli.main`` resolve unchanged.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,56 @@ def _m():
     from hermes_cli import main
 
     return main
+
+
+def _is_dashboard_process_cmdline(command: str, patterns: list[str]) -> bool:
+    """Match dashboard/serve invocations, including global CLI options.
+
+    Hermes accepts global options before the subcommand, for example
+    ``hermes --profile support serve``.  The historical substring patterns
+    only matched ``hermes serve`` and therefore missed profiled Desktop SSH
+    backends entirely, allowing orphaned processes to accumulate.
+    """
+    if any(pattern in command for pattern in patterns):
+        return True
+
+    try:
+        tokens = shlex.split(command, posix=sys.platform != "win32")
+    except ValueError:
+        return False
+
+    launcher_index: int | None = None
+    for index, token in enumerate(tokens[:4]):
+        normalized = token.strip('"\'').replace("\\", "/").lower()
+        basename = normalized.rsplit("/", 1)[-1]
+        if basename in {"hermes", "hermes.exe"} or normalized.endswith(
+            "/hermes_cli/main.py"
+        ) or normalized == "hermes_cli.main":
+            launcher_index = index
+            break
+    if launcher_index is None:
+        return False
+
+    # Skip the global options that take values and commonly precede the
+    # dashboard/serve subcommand.  Inline ``--option=value`` forms consume no
+    # following token.  Stop at the first positional token: that is the CLI
+    # subcommand, so a later word in a chat prompt cannot produce a match.
+    value_options = {"--profile", "-p", "--resume", "-r", "--skills", "-s"}
+    flag_options = {"--worktree", "-w", "--yolo", "--pass-session-id"}
+    index = launcher_index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in value_options:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in value_options):
+            index += 1
+            continue
+        if token in flag_options:
+            index += 1
+            continue
+        return token in {"dashboard", "serve"}
+    return False
 
 
 def _scan_dashboard_processes(
@@ -101,7 +152,7 @@ def _scan_dashboard_processes(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
+                        _is_dashboard_process_cmdline(current_cmd, patterns)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -134,7 +185,7 @@ def _scan_dashboard_processes(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_dashboard_process_cmdline(command, patterns) and pid != self_pid:
                         dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
