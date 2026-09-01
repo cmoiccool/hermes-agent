@@ -6141,16 +6141,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # macOS / BSD: use psutil.open_files().  macOS does not use the
         # "(deleted)" suffix convention, so psutil's filtering is safe here.
         try:
-            for process in psutil.process_iter(["pid", "open_files"]):
-                info = process.info
-                pid = int(info["pid"])
+            for process in psutil.process_iter():
+                pid = int(process.pid)
                 if pid == os.getpid():
                     continue
-                # psutil's as_dict() converts AccessDenied to None, which
-                # or-() turns into an empty iteration.  On macOS this is
-                # acceptable: the gateway/desktop topology from the issue is
-                # Linux-specific (systemd units running as root).
-                for opened in info.get("open_files") or ():
+                try:
+                    open_files = process.open_files()
+                except (
+                    psutil.AccessDenied,
+                    psutil.NoSuchProcess,
+                    psutil.ZombieProcess,
+                    RuntimeError,
+                ):
+                    # Restricted, exiting, and zombie processes are
+                    # uninspectable on macOS.  psutil may surface the
+                    # PROC_PIDLISTFDS race for an exiting process as a raw
+                    # RuntimeError instead of NoSuchProcess.  These failures
+                    # are scoped to this PID; do not let one process abort the
+                    # whole scan.  Failures of process_iter() itself still
+                    # reach the outer handler and keep admission fail-closed.
+                    continue
+                for opened in open_files or ():
                     path = getattr(opened, "path", "")
                     if path and _canonical(path) in watched:
                         holders.append((pid, path))

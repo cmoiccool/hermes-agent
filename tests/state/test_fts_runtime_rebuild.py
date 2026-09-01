@@ -145,30 +145,38 @@ class TestRuntimeFtsRebuild:
     ):
         db_path = tmp_path / "state.db"
 
+        class FakeProcess:
+            def __init__(self, pid, open_files):
+                self.pid = pid
+                self._open_files = open_files
+
+            def open_files(self):
+                return self._open_files
+
         class FakePsutil:
+            class AccessDenied(Exception):
+                pass
+
+            class NoSuchProcess(Exception):
+                pass
+
+            class ZombieProcess(Exception):
+                pass
+
             @staticmethod
-            def process_iter(_attrs):
+            def process_iter():
                 return iter(
                     (
-                        SimpleNamespace(
-                            info={
-                                "pid": 111,
-                                "open_files": [SimpleNamespace(path=str(db_path))],
-                            }
+                        FakeProcess(
+                            111, [SimpleNamespace(path=str(db_path))]
                         ),
-                        SimpleNamespace(
-                            info={
-                                "pid": 222,
-                                "open_files": [
-                                    SimpleNamespace(path=f"{db_path}-wal (deleted)")
-                                ],
-                            }
+                        FakeProcess(
+                            222,
+                            [SimpleNamespace(path=f"{db_path}-wal (deleted)")],
                         ),
-                        SimpleNamespace(
-                            info={
-                                "pid": 333,
-                                "open_files": [SimpleNamespace(path=str(tmp_path / "other.db"))],
-                            }
+                        FakeProcess(
+                            333,
+                            [SimpleNamespace(path=str(tmp_path / "other.db"))],
                         ),
                     )
                 )
@@ -182,6 +190,54 @@ class TestRuntimeFtsRebuild:
         assert db._foreign_state_db_holders() == [
             (222, f"{db_path}-wal (deleted)")
         ]
+
+    def test_foreign_holder_detection_skips_macos_access_denied_process(
+        self, db, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+
+        class FakeProcess:
+            def __init__(self, pid, result):
+                self.pid = pid
+                self._result = result
+
+            def open_files(self):
+                if isinstance(self._result, Exception):
+                    raise self._result
+                return self._result
+
+        class FakePsutil:
+            class AccessDenied(Exception):
+                pass
+
+            class NoSuchProcess(Exception):
+                pass
+
+            class ZombieProcess(Exception):
+                pass
+
+            @staticmethod
+            def process_iter():
+                return iter(
+                    (
+                        FakeProcess(
+                            222,
+                            RuntimeError(
+                                "proc_pidinfo(PROC_PIDLISTFDS) 2/2 syscall failed"
+                            ),
+                        ),
+                        FakeProcess(
+                            333, [SimpleNamespace(path=f"{db_path}-wal")]
+                        ),
+                    )
+                )
+
+        monkeypatch.setattr(hermes_state, "psutil", FakePsutil)
+        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
+        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        assert db._foreign_state_db_holders() == [(333, f"{db_path}-wal")]
 
     def test_foreign_holder_detection_proc_readlink_deleted_wal(
         self, db, tmp_path, monkeypatch
